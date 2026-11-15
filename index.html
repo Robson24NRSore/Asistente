@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Asistente</title>
+<style>
+body{font-family:system-ui,sans-serif;margin:0;background:#0f172a;color:#e2e8f0;display:flex;flex-direction:column;height:100vh}
+nav{display:flex}nav button{flex:1;padding:14px 4px;background:#1e293b;color:#e2e8f0;border:0;font-size:14px}
+nav .on{background:#334155;font-weight:600}
+main{flex:1;overflow:auto;padding:16px}
+#mic{width:120px;height:120px;border-radius:50%;border:0;background:#2563eb;color:#fff;font-size:44px;display:block;margin:20px auto}
+#mic.on{background:#dc2626}
+.b{padding:10px 14px;margin:8px 0;border-radius:12px;background:#1e293b;white-space:pre-wrap}
+.u{background:#334155;text-align:right}
+.n button{float:right;background:none;border:0;font-size:18px}
+#st{text-align:center;min-height:1.4em}
+main>button:not(#mic){padding:10px 14px;margin:4px 6px 8px 0;border:0;border-radius:8px;background:#334155;color:#e2e8f0;font-size:15px}
+</style></head><body>
+<nav><button id="t1" class="on">Voz</button><button id="t2">Notas</button><button id="t3">Informe</button><button id="t4">Cuentas</button></nav>
+<main id="v">
+  <button id="mic" aria-label="Hablar">🎤</button>
+  <p id="st"></p>
+  <label><input type="checkbox" id="hf"> Manos libres (vuelve a escuchar solo)</label>
+  <div id="log"></div>
+</main>
+<main id="nt" hidden></main>
+<main id="inf" hidden></main>
+<main id="ac" hidden></main>
+<script>
+const $ = id => document.getElementById(id);
+let cfg = JSON.parse(localStorage.getItem('cfg') || 'null');
+if (cfg && cfg.url) cfg = { cuentas: [{ nombre: 'Principal', url: cfg.url, token: cfg.token }] }; // formato anterior
+const save = () => localStorage.setItem('cfg', JSON.stringify(cfg));
+function pedirCuenta(principal) {
+  const nombre = prompt(principal ? 'Cuenta de Google donde se guardará tu historial y notas (escribe su correo)' : 'Correo de la cuenta de respaldo');
+  const url = nombre && prompt('URL de su Apps Script (termina en /exec)');
+  const token = url && prompt('Clave secreta (TOKEN) de esa cuenta');
+  if (!token) return false;
+  cfg.cuentas.push({ nombre, url, token }); save(); return true;
+}
+if (!cfg || !cfg.cuentas.length) { cfg = { cuentas: [] }; pedirCuenta(true); }
+async function call(c, action, data = {}) {
+  const r = await fetch(c.url, { method: 'POST', headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify({ token: c.token, action, ...data }) });
+  return r.json();
+}
+const api = (action, data) => call(cfg.cuentas[0], action, data);
+function add(t, c) { const d = document.createElement('div'); d.className = 'b ' + c; d.textContent = t; $('log').prepend(d); }
+function speak(t, done) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(t); u.lang = 'es-PE'; u.onend = done; speechSynthesis.speak(u);
+}
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function listen() {
+  if (!SR) { $('st').textContent = 'Abre esta página en Chrome para Android'; return; }
+  speechSynthesis.cancel();
+  const rec = new SR(); rec.lang = 'es-PE';
+  rec.onstart = () => { $('mic').classList.add('on'); $('st').textContent = 'Escuchando…'; };
+  rec.onend = () => $('mic').classList.remove('on');
+  rec.onerror = () => { $('st').textContent = 'No te escuché, toca de nuevo'; };
+  rec.onresult = async e => {
+    const t = e.results[0][0].transcript; add(t, 'u'); $('st').textContent = 'Pensando…';
+    let a;
+    try { const r = await api('chat', { text: t }); a = r.error ? 'Error: ' + r.error : r.text; }
+    catch (x) { a = 'Error de conexión'; }
+    add(a, ''); $('st').textContent = '';
+    speak(a, () => { if ($('hf').checked) listen(); });
+  };
+  rec.start();
+}
+$('mic').onclick = listen; // tocar mientras habla lo interrumpe y vuelve a escuchar
+
+async function loadNotes() {
+  $('nt').textContent = 'Cargando…';
+  const r = await api('listNotes'); $('nt').textContent = '';
+  if (!(r.notes || []).length) $('nt').textContent = 'Aún no hay notas. Dile: "anota que…"';
+  (r.notes || []).forEach(n => {
+    const d = document.createElement('div'); d.className = 'b n';
+    const x = document.createElement('button'); x.textContent = '🗑';
+    x.onclick = async () => { if (confirm('¿Borrar esta nota?')) { await api('deleteNote', { id: n.id }); loadNotes(); } };
+    d.append(x, document.createTextNode(n.text)); $('nt').append(d);
+  });
+}
+async function loadInforme() {
+  const box = $('inf'); box.textContent = 'Generando informe…';
+  const r = await api('informe'), t = r.text || r.error;
+  const pre = document.createElement('div'); pre.className = 'b'; pre.textContent = t;
+  const b1 = document.createElement('button'); b1.textContent = '📋 Copiar';
+  b1.onclick = () => navigator.clipboard.writeText(t).then(() => b1.textContent = '✔ Copiado');
+  const b2 = document.createElement('button'); b2.textContent = '📤 Compartir';
+  b2.onclick = () => navigator.share ? navigator.share({ text: t }) : b1.click();
+  box.textContent = ''; box.append(b1, b2, pre);
+}
+function loadCuentas() {
+  const box = $('ac'); box.textContent = '';
+  cfg.cuentas.forEach((c, i) => { const d = document.createElement('div'); d.className = 'b'; d.textContent = (i ? 'Respaldo: ' : 'Principal (historial y notas): ') + c.nombre; box.append(d); });
+  const a = document.createElement('button'); a.textContent = '➕ Agregar cuenta de respaldo';
+  a.onclick = () => { if (pedirCuenta(false)) loadCuentas(); };
+  const s = document.createElement('button'); s.textContent = '🔄 Sincronizar respaldos';
+  s.onclick = async () => { s.textContent = 'Sincronizando…'; const data = await api('exportAll');
+    for (const c of cfg.cuentas.slice(1)) await call(c, 'importAll', { data }); s.textContent = '✔ Listo'; };
+  box.append(a, s);
+}
+function tab(n) {
+  ['v', 'nt', 'inf', 'ac'].forEach((id, i) => { $(id).hidden = i + 1 !== n; $('t' + (i + 1)).className = i + 1 === n ? 'on' : ''; });
+  if (n === 2) loadNotes(); if (n === 3) loadInforme(); if (n === 4) loadCuentas();
+}
+[1, 2, 3, 4].forEach(n => $('t' + n).onclick = () => tab(n));
+</script></body></html>
